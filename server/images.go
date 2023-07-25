@@ -16,7 +16,9 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"text/template"
+	"time"
 
 	"github.com/jmorganca/ollama/api"
 	"github.com/jmorganca/ollama/parser"
@@ -956,6 +958,13 @@ func uploadBlobChunked(mp ModelPath, location string, layer *Layer, regOpts *Reg
 	return nil
 }
 
+type DownloadProgress struct {
+	Total     int64
+	Completed int64
+}
+
+var inProgress sync.Map // map of digests currently being downloaded to their current download progress
+
 func downloadBlob(mp ModelPath, digest string, regOpts *RegistryOptions, fn func(api.ProgressResponse)) error {
 	fp, err := GetBlobsPath(digest)
 	if err != nil {
@@ -970,6 +979,29 @@ func downloadBlob(mp ModelPath, digest string, regOpts *RegistryOptions, fn func
 			Completed: int(fi.Size()),
 		})
 
+		return nil
+	}
+
+	_, downloading := inProgress.LoadOrStore(digest, &DownloadProgress{Total: 1, Completed: 0}) // store a dummy value to indicate that we're downloading
+	if downloading {
+		for {
+			val, downloading := inProgress.Load(digest)
+			if !downloading {
+				break
+			}
+			dl, ok := val.(*DownloadProgress)
+			if !ok || dl.Completed >= dl.Total {
+				break
+			}
+			fn(api.ProgressResponse{
+				Status:    fmt.Sprintf("downloading %s", digest),
+				Digest:    digest,
+				Total:     int(dl.Total),
+				Completed: int(dl.Completed),
+			})
+			sleep := time.NewTimer(1 * time.Second)
+			<-sleep.C
+		}
 		return nil
 	}
 
@@ -1025,6 +1057,11 @@ func downloadBlob(mp ModelPath, digest string, regOpts *RegistryOptions, fn func
 	completed := size
 	total := remaining + completed
 
+	inProgress.Store(digest, &DownloadProgress{
+		Total:     total,
+		Completed: completed,
+	})
+
 	for {
 		fn(api.ProgressResponse{
 			Status:    fmt.Sprintf("downloading %s", digest),
@@ -1056,7 +1093,13 @@ func downloadBlob(mp ModelPath, digest string, regOpts *RegistryOptions, fn func
 			return err
 		}
 		completed += n
+		inProgress.Store(digest, &DownloadProgress{
+			Total:     total,
+			Completed: completed,
+		})
 	}
+
+	inProgress.Delete(digest)
 
 	log.Printf("success getting %s\n", digest)
 	return nil
