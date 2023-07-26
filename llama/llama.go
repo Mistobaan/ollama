@@ -79,6 +79,7 @@ llama_token llama_sample(
 import "C"
 import (
 	"bytes"
+	"embed"
 	"errors"
 	"fmt"
 	"io"
@@ -90,6 +91,9 @@ import (
 
 	"github.com/jmorganca/ollama/api"
 )
+
+//go:embed ggml-metal.metal
+var fs embed.FS
 
 type llama struct {
 	params *C.struct_llama_context_params
